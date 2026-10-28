@@ -61,21 +61,25 @@ jobs:
           # 把 web 内容放进 www（cordova 的 webDir 默认就是 www）
           rm -rf www
           cp -r ../www ./www
-          # 🔴 关键：客户端连的是明文 http 隧道域名 → 必须开 cleartext。
+          # 🔴 关键：客户端要连公网 https 隧道域名 → 必须允许该来源。
           #   ❌ 不要用 sed 往 config.xml 的 <widget> 塞 android: 属性 ——
           #      那会生成 AttributePrefixUnbound 的坏 XML（第七版就是这么失败的）。
-          #   ✅ Cordova 官方做法：改 AndroidManifest 模板，cordova build 时会带过去。
-          MANIFEST=platforms/android/app/src/main/AndroidManifest.xml
+          #   ✅ 用 Cordova 原生的 <access> / <allow-navigation> 配置项
+          #      （写在 <widget> 内部，走 Cordova 自己的 schema，合法）。
           python3 - <<'PYEOF'
-          import re, io
-          p = "platforms/android/app/src/main/AndroidManifest.xml"
+          import io, re
+          p = "config.xml"
           s = io.open(p, encoding="utf-8").read()
-          if "usesCleartextTraffic" not in s:
-              s = s.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
+          if "<access origin=" not in s:
+              s = s.replace("</widget>",
+                  '    <access origin="*" />\n'
+                  '    <allow-navigation href="*" />\n'
+                  '    <preference name="AndroidInsecureFileModeEnabled" value="true" />\n'
+                  '</widget>', 1)
               io.open(p, "w", encoding="utf-8").write(s)
-          print("manifest patched:", "usesCleartextTraffic" in s)
+          print("config patched, access count =", s.count("<access origin="))
           PYEOF
-          grep -n "usesCleartextTraffic" "$MANIFEST" || true
+          grep -n "access origin\|allow-navigation" config.xml || true
           cordova build android --release -- --packageType=apk
 
       - name: Sign APK
