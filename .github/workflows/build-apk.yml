@@ -41,8 +41,14 @@ jobs:
           export ANDROID_HOME="$ANDROID_SDK_ROOT"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          # 🔴 第五版真因（拉 build log 确认）：
+          #   "Could not find the android platform" —— Capacitor 7+ 要求
+          #   **compileSdk 35+**，只装 android-34 不认。
+          #   → 装 34 + 35 + build-tools 34/35 双保险。
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+            "platform-tools" \
+            "platforms;android-34" "platforms;android-35" \
+            "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --list_installed | head -20
           ls "$ANDROID_SDK_ROOT/platforms" || true
 
@@ -84,6 +90,12 @@ jobs:
           # 调低 minSdk 以兼容更多老机型
           sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle || true
           sed -i 's/minSdkVersion 22/minSdkVersion 23/' android/app/build.gradle || true
+          # 🔴 兜底：把 compileSdk / targetSdk 顶到 35（Capacitor 7+ 要求）
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle || true
+          sed -i 's/compileSdkVersion 34/compileSdkVersion 35/' android/app/build.gradle || true
+          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle || true
+          sed -i 's/targetSdkVersion 34/targetSdkVersion 35/' android/app/build.gradle || true
+          grep -nE "compileSdk|targetSdk|minSdk" android/variables.gradle || true
           # 🔴 关键：客户端要连 http://<隧道域名>（明文 HTTP）→
           #    必须开 cleartext，否则 Android 9+ 直接拒连。
           if ! grep -q 'usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml; then
