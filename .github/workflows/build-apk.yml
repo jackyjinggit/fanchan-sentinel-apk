@@ -34,10 +34,17 @@ jobs:
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls -d "$ANDROID_HOME" || true
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+          # 🔴 2026-10-28 10:45 实测：Capacitor 认 **ANDROID_SDK_ROOT**，
+          #    runner 默认只设 ANDROID_HOME → "Could not find the android platform"。
+          #    两个都导出。
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | head -20
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --list_installed | head -20
+          ls "$ANDROID_SDK_ROOT/platforms" || true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -50,10 +57,15 @@ jobs:
 
       - name: Create Android project
         run: |
-          # 🔴 第一版 `npx cap init` 失败：它会**交互式提问**（appName / appId / webDir）
-          #    → 在 CI 里挂死；且新版 CLI 的 `--web-dir` 位置也变了。
-          #    修法：**先手写 capacitor.config.json**（cap add 只读它，不再提问），
-          #         再 `npx cap add android`。
+          # 🔴 第四版真因（拉日志确认，不再猜）：
+          #   ① `npx cap add android --no-interactive` → "unknown option" 直接退出
+          #      → 去掉该 flag（cap add 本身非交互）
+          #   ② "Could not find the android platform" → Capacitor 认 ANDROID_SDK_ROOT
+          #      （runner 只设 ANDROID_HOME）→ 在本 step 重新导出（env 作用域独立）
+          export ANDROID_SDK_ROOT="${ANDROID_HOME}"
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          echo "SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls "$ANDROID_SDK_ROOT/platforms" || true
           cat > package.json <<'PKG'
           { "name": "fanchan-sentinel-apk", "version": "0.1.0", "private": true }
           PKG
@@ -66,16 +78,14 @@ jobs:
           }
           CFG
           npm install -g @capacitor/cli@latest
-          npx cap add android --no-interactive || npx cap add android
+          npx cap add android
           # 把 www 同步进 android 资产目录
-          npx cap sync android --no-interactive || npx cap sync android
+          npx cap sync android
           # 调低 minSdk 以兼容更多老机型
           sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle || true
           sed -i 's/minSdkVersion 22/minSdkVersion 23/' android/app/build.gradle || true
           # 🔴 关键：客户端要连 http://<隧道域名>（明文 HTTP）→
           #    必须开 cleartext，否则 Android 9+ 直接拒连。
-          sed -i 's|android:usesCleartextTraffic="true"|android:usesCleartextTraffic="true"|' \
-            android/app/src/main/AndroidManifest.xml || true
           if ! grep -q 'usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml; then
             sed -i 's|<application|<application android:usesCleartextTraffic="true"|' \
               android/app/src/main/AndroidManifest.xml
