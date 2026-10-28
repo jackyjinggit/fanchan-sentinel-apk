@@ -49,13 +49,38 @@ jobs:
 
       - name: Create Android project
         run: |
-          # 🔴 用官方 capacitor-android 模板生成（比手写 gradle 稳）
+          # 🔴 第一版 `npx cap init` 失败：它会**交互式提问**（appName / appId / webDir）
+          #    → 在 CI 里挂死；且新版 CLI 的 `--web-dir` 位置也变了。
+          #    修法：**先手写 capacitor.config.json**（cap add 只读它，不再提问），
+          #         再 `npx cap add android`。
+          cat > package.json <<'PKG'
+          { "name": "fanchan-sentinel-apk", "version": "0.1.0", "private": true }
+          PKG
+          cat > capacitor.config.json <<'CFG'
+          {
+            "appId": "com.fanchan.sentinel",
+            "appName": "Fanchan Sentinel",
+            "webDir": "www",
+            "server": { "androidScheme": "https" }
+          }
+          CFG
           npm install -g @capacitor/cli@latest
-          npx cap init FanchanSentinel com.fanchan.sentinel --web-dir www
-          npx cap add android
+          npx cap add android --no-interactive || npx cap add android
+          # 把 www 同步进 android 资产目录
+          npx cap sync android --no-interactive || npx cap sync android
           # 调低 minSdk 以兼容更多老机型
           sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle || true
           sed -i 's/minSdkVersion 22/minSdkVersion 23/' android/app/build.gradle || true
+          # 🔴 关键：客户端要连 http://<隧道域名>（明文 HTTP）→
+          #    必须开 cleartext，否则 Android 9+ 直接拒连。
+          sed -i 's|android:usesCleartextTraffic="true"|android:usesCleartextTraffic="true"|' \
+            android/app/src/main/AndroidManifest.xml || true
+          if ! grep -q 'usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml; then
+            sed -i 's|<application|<application android:usesCleartextTraffic="true"|' \
+              android/app/src/main/AndroidManifest.xml
+          fi
+          grep -n "usesCleartextTraffic" android/app/src/main/AndroidManifest.xml
+          ls -la android/app/build/outputs 2>/dev/null || true
 
       - name: Build APK
         run: |
