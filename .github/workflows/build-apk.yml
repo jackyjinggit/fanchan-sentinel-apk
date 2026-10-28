@@ -1,6 +1,6 @@
 name: build-apk
 
-# 🔴 2026-10-28：本机无 Android SDK / JDK / gradle → 云端构建。
+# 🔴 2026-10-28：云端构建 APK（GitHub runner 自带 Android SDK，不装额外 action）
 # 触发：push 到 main（tag 时额外发 Release）→ 产物 APK 可直接下载安装。
 
 on:
@@ -26,8 +26,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # 🔴 第一版用 android-actions/setup-android@v3 → 失败（该 action 的许可处理
+      #    在当前 runner 上不稳定）。GitHub 的 ubuntu runner **本身就预装了
+      #    Android SDK**（ANDROID_HOME 已设），只要接受许可 + 装齐组件即可。
+      - name: Accept Android licenses and install SDK packages
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -d "$ANDROID_HOME" || true
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | head -20
 
       - name: Cache Gradle
         uses: actions/cache@v4
