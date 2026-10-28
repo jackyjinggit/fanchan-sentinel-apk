@@ -18,7 +18,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 🔴 必须 >=22：Capacitor CLI 报 "requires NodeJS >=22.0.0" 直接退出
+          node-version: '22'
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
