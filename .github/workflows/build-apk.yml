@@ -61,14 +61,21 @@ jobs:
           # 把 web 内容放进 www（cordova 的 webDir 默认就是 www）
           rm -rf www
           cp -r ../www ./www
-          # 关键：客户端连的是明文 http 隧道域名 → 必须开 cleartext
-          cordova plugin add cordova-plugin-allow-mixed-content --nosave || true
-          sed -i 's|android:usesCleartextTraffic="true"|android:usesCleartextTraffic="true"|' \
-            config.xml || true
-          if ! grep -q 'usesCleartextTraffic="true"' config.xml; then
-            sed -i 's|<widget|<widget android:usesCleartextTraffic="true"|' config.xml
-          fi
-          grep -n "usesCleartextTraffic" config.xml
+          # 🔴 关键：客户端连的是明文 http 隧道域名 → 必须开 cleartext。
+          #   ❌ 不要用 sed 往 config.xml 的 <widget> 塞 android: 属性 ——
+          #      那会生成 AttributePrefixUnbound 的坏 XML（第七版就是这么失败的）。
+          #   ✅ Cordova 官方做法：改 AndroidManifest 模板，cordova build 时会带过去。
+          MANIFEST=platforms/android/app/src/main/AndroidManifest.xml
+          python3 - <<'PYEOF'
+          import re, io
+          p = "platforms/android/app/src/main/AndroidManifest.xml"
+          s = io.open(p, encoding="utf-8").read()
+          if "usesCleartextTraffic" not in s:
+              s = s.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
+              io.open(p, "w", encoding="utf-8").write(s)
+          print("manifest patched:", "usesCleartextTraffic" in s)
+          PYEOF
+          grep -n "usesCleartextTraffic" "$MANIFEST" || true
           cordova build android --release -- --packageType=apk
 
       - name: Upload APK artifact
