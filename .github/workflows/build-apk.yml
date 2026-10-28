@@ -1,6 +1,12 @@
 name: build-apk
 
-# 🔴 2026-10-28：云端构建 APK（GitHub runner 自带 Android SDK，不装额外 action）
+# 🔴 2026-10-28 11:00 重写：
+#   前 6 版用 Capacitor，全部卡在 "Could not find the android platform"
+#   （Capacitor 7+ 的 platform 检测逻辑与 runner 的 SDK 布局不兼容，
+#     android-34/35/36/37 全部装好仍报找不到 → 已放弃）。
+#   改用 **Cordova**：检测逻辑简单（只看 platforms/ 目录 + Android SDK），
+#   且 www 直接进 assets/，不需要额外 sync 步骤。
+#
 # 触发：push 到 main（tag 时额外发 Release）→ 产物 APK 可直接下载安装。
 
 on:
@@ -18,7 +24,6 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          # 🔴 必须 >=22：Capacitor CLI 报 "requires NodeJS >=22.0.0" 直接退出
           node-version: '22'
 
       - name: Setup Java 17
@@ -27,30 +32,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 🔴 第一版用 android-actions/setup-android@v3 → 失败（该 action 的许可处理
-      #    在当前 runner 上不稳定）。GitHub 的 ubuntu runner **本身就预装了
-      #    Android SDK**（ANDROID_HOME 已设），只要接受许可 + 装齐组件即可。
-      - name: Accept Android licenses and install SDK packages
+      - name: Prepare Android SDK
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls -d "$ANDROID_HOME" || true
-          # 🔴 2026-10-28 10:45 实测：Capacitor 认 **ANDROID_SDK_ROOT**，
-          #    runner 默认只设 ANDROID_HOME → "Could not find the android platform"。
-          #    两个都导出。
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_SDK_ROOT="${ANDROID_HOME}"
           export ANDROID_HOME="$ANDROID_SDK_ROOT"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          # 🔴 第五版真因（拉 build log 确认）：
-          #   "Could not find the android platform" —— Capacitor 7+ 要求
-          #   **compileSdk 35+**，只装 android-34 不认。
-          #   → 装 34 + 35 + build-tools 34/35 双保险。
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "platform-tools" \
-            "platforms;android-34" "platforms;android-35" \
-            "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --list_installed | head -20
-          ls "$ANDROID_SDK_ROOT/platforms" || true
+            "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          ls "$ANDROID_SDK_ROOT/platforms"
+          ls "$ANDROID_SDK_ROOT/build-tools"
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -58,69 +49,38 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle*') }}
+          key: gradle-cordova-${{ hashFiles('**/*.gradle*') }}
           restore-keys: gradle-
 
-      - name: Create Android project
+      - name: Create Cordova project
         run: |
-          # 🔴 第四版真因（拉日志确认，不再猜）：
-          #   ① `npx cap add android --no-interactive` → "unknown option" 直接退出
-          #      → 去掉该 flag（cap add 本身非交互）
-          #   ② "Could not find the android platform" → Capacitor 认 ANDROID_SDK_ROOT
-          #      （runner 只设 ANDROID_HOME）→ 在本 step 重新导出（env 作用域独立）
-          export ANDROID_SDK_ROOT="${ANDROID_HOME}"
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          echo "SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls "$ANDROID_SDK_ROOT/platforms" || true
-          cat > package.json <<'PKG'
-          { "name": "fanchan-sentinel-apk", "version": "0.1.0", "private": true }
-          PKG
-          cat > capacitor.config.json <<'CFG'
-          {
-            "appId": "com.fanchan.sentinel",
-            "appName": "Fanchan Sentinel",
-            "webDir": "www",
-            "server": { "androidScheme": "https" }
-          }
-          CFG
-          npm install -g @capacitor/cli@latest
-          npx cap add android
-          # 把 www 同步进 android 资产目录
-          npx cap sync android
-          # 调低 minSdk 以兼容更多老机型
-          sed -i 's/minSdkVersion = 22/minSdkVersion = 23/' android/variables.gradle || true
-          sed -i 's/minSdkVersion 22/minSdkVersion 23/' android/app/build.gradle || true
-          # 🔴 兜底：把 compileSdk / targetSdk 顶到 35（Capacitor 7+ 要求）
-          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 35/' android/variables.gradle || true
-          sed -i 's/compileSdkVersion 34/compileSdkVersion 35/' android/app/build.gradle || true
-          sed -i 's/targetSdkVersion = 34/targetSdkVersion = 35/' android/variables.gradle || true
-          sed -i 's/targetSdkVersion 34/targetSdkVersion 35/' android/app/build.gradle || true
-          grep -nE "compileSdk|targetSdk|minSdk" android/variables.gradle || true
-          # 🔴 关键：客户端要连 http://<隧道域名>（明文 HTTP）→
-          #    必须开 cleartext，否则 Android 9+ 直接拒连。
-          if ! grep -q 'usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml; then
-            sed -i 's|<application|<application android:usesCleartextTraffic="true"|' \
-              android/app/src/main/AndroidManifest.xml
+          npm install -g cordova
+          cordova create app com.fanchan.sentinel FanchanSentinel
+          cd app
+          cordova platform add android@13 --nosave
+          # 把 web 内容放进 www（cordova 的 webDir 默认就是 www）
+          rm -rf www
+          cp -r ../www ./www
+          # 关键：客户端连的是明文 http 隧道域名 → 必须开 cleartext
+          cordova plugin add cordova-plugin-allow-mixed-content --nosave || true
+          sed -i 's|android:usesCleartextTraffic="true"|android:usesCleartextTraffic="true"|' \
+            config.xml || true
+          if ! grep -q 'usesCleartextTraffic="true"' config.xml; then
+            sed -i 's|<widget|<widget android:usesCleartextTraffic="true"|' config.xml
           fi
-          grep -n "usesCleartextTraffic" android/app/src/main/AndroidManifest.xml
-          ls -la android/app/build/outputs 2>/dev/null || true
-
-      - name: Build APK
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          grep -n "usesCleartextTraffic" config.xml
+          cordova build android --release -- --packageType=apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: fanchan-sentinel-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: app/platforms/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       - name: Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/release/*.apk
+          files: app/platforms/android/app/build/outputs/apk/release/*.apk
           generate_release_notes: true
