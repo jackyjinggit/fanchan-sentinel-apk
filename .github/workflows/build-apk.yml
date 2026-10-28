@@ -78,16 +78,49 @@ jobs:
           grep -n "usesCleartextTraffic" "$MANIFEST" || true
           cordova build android --release -- --packageType=apk
 
+      - name: Sign APK
+        run: |
+          # 🔴 cordova build --release 产出的是 **unsigned** APK，手机装不了
+          #    （必须签名 + 走 zipalign）。云端已有 JDK17 + build-tools，直接签。
+          set -e
+          BT=$(ls -d "$ANDROID_SDK_ROOT/build-tools/"* | sort -V | tail -1)
+          echo "build-tools: $BT"
+          APK=$(ls app/platforms/android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "apk: $APK"
+          # 生成调试用 keystore（有效期 30 年）
+          keytool -genkeypair -v \
+            -keystore app/release.keystore \
+            -alias fanchan \
+            -keyalg RSA -keysize 2048 -validity 10950 \
+            -storepass fanchan2026 -keypass fanchan2026 \
+            -dname "CN=Fanchan Sentinel, OU=Personal, O=Fanchan, L=Chongqing, S=Chongqing, C=CN"
+          # zipalign + apksigner
+          "$BT/zipalign" -f -v 4 "$APK" app/platforms/android/app/build/outputs/apk/release/app-aligned.apk
+          "$BT/apksigner" sign \
+            --ks app/release.keystore --ks-pass pass:fanchan2026 \
+            --key-pass pass:fanchan2026 --ks-key-alias fanchan \
+            --out app/fanchan-sentinel.apk \
+            app/platforms/android/app/build/outputs/apk/release/app-aligned.apk
+          "$BT/apksigner" verify --print-certs app/fanchan-sentinel.apk | head -5
+          ls -la app/fanchan-sentinel.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: fanchan-sentinel-apk
-          path: app/platforms/android/app/build/outputs/apk/release/*.apk
+          path: app/fanchan-sentinel.apk
           if-no-files-found: error
 
       - name: Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/platforms/android/app/build/outputs/apk/release/*.apk
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 🔴 softprops/action-gh-release 的 generate_release_notes 需要
+          #    更高 token 权限（实测 "Resource not accessible by integration"）→ 改用 gh。
+          #    release 已存在则只补传资产。
+          gh release view v0.1.0 >/dev/null 2>&1 \
+            || gh release create v0.1.0 --title "v0.1.0" \
+                 --notes "Fanchan Sentinel Android client. Judgement runs on a local server (all inference stays on your machine)."
+          gh release upload v0.1.0 app/fanchan-sentinel.apk --clobber \
+            || echo "release asset upload skipped (no permission) - artifact still available"
